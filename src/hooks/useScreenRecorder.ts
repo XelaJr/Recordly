@@ -2193,7 +2193,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			// Linux portal: the screen picker (and its permission token) runs
 			// BEFORE the countdown, so the recording starts immediately after
 			// it — no frozen lead-in frames and no telemetry/video drift.
-			if (countdownDelay > 0) {
+			if (useLinuxPortal && countdownDelay > 0) {
 				setCountdownActive(true);
 				try {
 					const result = await window.electronAPI.startCountdown(countdownDelay);
