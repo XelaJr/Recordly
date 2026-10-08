@@ -18,6 +18,7 @@ import type {
 	UiohookModuleNamespace,
 } from "../types";
 import { isHyprlandCursorProviderActive, startEvdevButtonCapture } from "./hyprland";
+import { startHyprlandButtonCapture } from "./hyprlandButtons";
 import {
 	getCursorCaptureElapsedMs,
 	getHookCursorScreenPoint,
@@ -27,6 +28,7 @@ import {
 } from "./telemetry";
 
 const nodeRequire = createRequire(import.meta.url);
+let interactionCaptureGeneration = 0;
 
 export function normalizeHookMouseButton(rawButton: unknown): 1 | 2 | 3 {
 	if (typeof rawButton !== "number" || !Number.isFinite(rawButton)) {
@@ -51,10 +53,10 @@ export function getHookMouseButton(event: HookMouseEvent | null | undefined): 1 
 }
 
 export function stopInteractionCapture() {
-	if (interactionCaptureCleanup) {
-		interactionCaptureCleanup();
-		setInteractionCaptureCleanup(null);
-	}
+	interactionCaptureGeneration += 1;
+	const cleanup = interactionCaptureCleanup;
+	setInteractionCaptureCleanup(null);
+	cleanup?.();
 }
 
 function isUiohookLike(value: unknown): value is UiohookLike {
@@ -235,11 +237,7 @@ export function recordCursorMouseUp() {
 }
 
 export async function startInteractionCapture() {
-	if (!isCursorCaptureActive) {
-		return;
-	}
-
-	if (!["darwin", "win32", "linux"].includes(process.platform)) {
+	if (!isCursorCaptureActive || !["darwin", "win32", "linux"].includes(process.platform)) {
 		return;
 	}
 
@@ -249,121 +247,132 @@ export async function startInteractionCapture() {
 	}
 
 	stopInteractionCapture();
-	let evdevAvailable = false;
+	const generation = interactionCaptureGeneration;
+	const isCurrentCapture = () =>
+		generation === interactionCaptureGeneration && isCursorCaptureActive;
+	const controller = new AbortController();
+	let stopPrimary: () => void = () => undefined;
+	let stopFallback: () => void = () => undefined;
+	let fallbackStarted = false;
 
-	const onMouseDown = (event: HookMouseEvent) => {
-		if (!evdevAvailable) {
-			recordCursorMouseDown(getHookMouseButton(event));
-		}
-	};
-
-	const onMouseUp = () => {
-		if (!evdevAvailable) {
-			recordCursorMouseUp();
-		}
-	};
-
-	// Raw evdev clicks (Wayland: the uiohook never sees them) — must start
-	// independently of the uiohook, which can fail to load on Wayland.
-	const stopEvdevCapture = startEvdevButtonCapture(
-		{
-			onMouseDown: recordCursorMouseDown,
-			onMouseUp: recordCursorMouseUp,
-		},
-		{
-			onDeviceOpened: () => {
-				evdevAvailable = true;
-			},
-		},
-	);
 	setInteractionCaptureCleanup(() => {
-		stopEvdevCapture();
+		controller.abort();
+		stopPrimary();
+		stopFallback();
 	});
 
-	try {
-		const hook = loadUiohookModule();
-		console.log(
-			"[CursorTelemetry] hook loaded:",
-			!!hook,
-			"has.on:",
-			typeof hook?.on,
-			"has.start:",
-			typeof hook?.start,
+	const startFallback = () => {
+		if (!isCurrentCapture() || fallbackStarted) return;
+		fallbackStarted = true;
+		let evdevAvailable = false;
+		const stopEvdevCapture = startEvdevButtonCapture(
+			{
+				onMouseDown: (button) => {
+					if (isCurrentCapture()) recordCursorMouseDown(button);
+				},
+				onMouseUp: () => {
+					if (isCurrentCapture()) recordCursorMouseUp();
+				},
+			},
+			{
+				onDeviceOpened: () => {
+					evdevAvailable = true;
+				},
+			},
 		);
-		if (!isCursorCaptureActive) {
-			stopEvdevCapture();
-			return;
-		}
+		stopFallback = stopEvdevCapture;
 
-		if (!hook || typeof hook.on !== "function" || typeof hook.start !== "function") {
-			console.warn("[CursorTelemetry] Global interaction hook unavailable.");
-			return;
-		}
-
-		const onMouseMove = (event: HookMouseEvent) => {
-			if (
-				process.platform !== "linux" ||
-				isHyprlandCursorProviderActive() ||
-				!isCursorCaptureActive ||
-				isCursorCapturePaused()
-			) {
+		try {
+			const hook = loadUiohookModule();
+			if (!hook || typeof hook.on !== "function" || typeof hook.start !== "function") {
+				console.warn("[CursorTelemetry] Global interaction hook unavailable.");
 				return;
 			}
-
-			const point = getHookCursorScreenPoint(event);
-			if (!point) {
-				return;
-			}
-
-			setLinuxCursorScreenPoint({
-				x: point.x,
-				y: point.y,
-				updatedAt: Date.now(),
-				coordinateSpace: "physical",
-				source: "uiohook",
-			});
-		};
-
-		hook.on("mousedown", onMouseDown);
-		hook.on("mouseup", onMouseUp);
-		if (process.platform === "linux") {
-			hook.on("mousemove", onMouseMove);
-		}
-
-		setInteractionCaptureCleanup(() => {
-			stopEvdevCapture();
-			try {
-				if (typeof hook.off === "function") {
-					hook.off("mousedown", onMouseDown);
-					hook.off("mouseup", onMouseUp);
-					if (process.platform === "linux") {
-						hook.off("mousemove", onMouseMove);
-					}
-				} else if (typeof hook.removeListener === "function") {
-					hook.removeListener("mousedown", onMouseDown);
-					hook.removeListener("mouseup", onMouseUp);
-					if (process.platform === "linux") {
-						hook.removeListener("mousemove", onMouseMove);
-					}
+			const onMouseDown = (event: HookMouseEvent) => {
+				if (isCurrentCapture() && !evdevAvailable) {
+					recordCursorMouseDown(getHookMouseButton(event));
 				}
-			} catch {
-				// ignore listener cleanup errors
-			}
+			};
+			const onMouseUp = () => {
+				if (isCurrentCapture() && !evdevAvailable) recordCursorMouseUp();
+			};
+			const onMouseMove = (event: HookMouseEvent) => {
+				if (
+					!isCurrentCapture() ||
+					process.platform !== "linux" ||
+					isHyprlandCursorProviderActive() ||
+					isCursorCapturePaused()
+				)
+					return;
+				const point = getHookCursorScreenPoint(event);
+				if (!point) return;
+				setLinuxCursorScreenPoint({
+					x: point.x,
+					y: point.y,
+					updatedAt: Date.now(),
+					coordinateSpace: "physical",
+					source: "uiohook",
+				});
+			};
 
-			try {
-				if (typeof hook.stop === "function") {
-					hook.stop();
+			hook.on("mousedown", onMouseDown);
+			hook.on("mouseup", onMouseUp);
+			if (process.platform === "linux") hook.on("mousemove", onMouseMove);
+			stopFallback = () => {
+				stopEvdevCapture();
+				try {
+					const removeListener = hook.off ?? hook.removeListener;
+					removeListener?.call(hook, "mousedown", onMouseDown);
+					removeListener?.call(hook, "mouseup", onMouseUp);
+					if (process.platform === "linux")
+						removeListener?.call(hook, "mousemove", onMouseMove);
+				} catch {
+					// ignore listener cleanup errors
 				}
-			} catch {
-				// ignore hook shutdown errors
+				try {
+					hook.stop?.();
+				} catch {
+					// ignore hook shutdown errors
+				}
+			};
+			hook.start();
+		} catch (error) {
+			if (!hasLoggedInteractionHookFailure) {
+				setHasLoggedInteractionHookFailure(true);
+				console.warn("[CursorTelemetry] Global interaction capture unavailable:", error);
 			}
-		});
-
-		hook.start();
-	} catch (error) {
-		if (!hasLoggedInteractionHookFailure) {
-			setHasLoggedInteractionHookFailure(true);
-			console.warn("[CursorTelemetry] Global interaction capture unavailable:", error);
 		}
+	};
+
+	try {
+		const primary = await startHyprlandButtonCapture(
+			{
+				onMouseDown: (button) => {
+					if (isCurrentCapture() && !fallbackStarted) recordCursorMouseDown(button);
+				},
+				onMouseUp: () => {
+					if (isCurrentCapture() && !fallbackStarted) recordCursorMouseUp();
+				},
+			},
+			{
+				signal: controller.signal,
+				onUnavailable: () => {
+					if (!isCurrentCapture() || fallbackStarted) return;
+					stopPrimary();
+					startFallback();
+				},
+			},
+		);
+		if (!isCurrentCapture()) {
+			primary.stop();
+			return;
+		}
+		stopPrimary = primary.stop;
+		if (!primary.available || fallbackStarted) {
+			stopPrimary();
+			startFallback();
+		}
+	} catch {
+		startFallback();
 	}
 }
