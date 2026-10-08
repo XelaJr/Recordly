@@ -26,8 +26,7 @@ export function buildHyprlandButtonCommand(action: "start" | "renew" | "stop", t
 	if (action === "renew") {
 		return `eval ${state}; assert(s and s.token == "${token}", "capture lease lost"); s.timer:set_timeout(5000)`;
 	}
-	return `eval 
-assert(type(hl) == "table" and type(hl.version) == "function" and type(hl.bind) == "function" and type(hl.timer) == "function" and type(hl.dispatch) == "function" and type(hl.dsp) == "table" and type(hl.dsp.event) == "function", "capture capabilities unavailable")
+	return `eval assert(type(hl) == "table" and type(hl.version) == "function" and type(hl.bind) == "function" and type(hl.timer) == "function" and type(hl.dispatch) == "function" and type(hl.dsp) == "table" and type(hl.dsp.event) == "function", "capture capabilities unavailable")
 local version = hl.version()
 local major, minor = tostring(version):match("^v?(%d+)%.(%d+)%.%d+")
 assert(major and (tonumber(major) > 0 or tonumber(minor) >= 55), "capture requires Hyprland 0.55 or newer")
