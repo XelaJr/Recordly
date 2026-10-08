@@ -122,6 +122,7 @@ export async function startHyprlandButtonCapture(
 	let ready = false;
 	let refreshGeneration = 0;
 	let buffered = "";
+	let discardingOversizedLine = false;
 	let timer: NodeJS.Timeout | null = null;
 	const send = (action: "start" | "renew" | "stop") => {
 		const pending = (requestQueues.get(requestPath) ?? Promise.resolve(true))
@@ -181,15 +182,21 @@ export async function startHyprlandButtonCapture(
 	};
 	socket.on("data", (chunk: string) => {
 		if (stopped) return;
+		if (discardingOversizedLine) {
+			const newline = chunk.indexOf("\n");
+			if (newline === -1) return;
+			chunk = chunk.slice(newline + 1);
+			discardingOversizedLine = false;
+		}
 		buffered += chunk;
 		let newline = buffered.indexOf("\n");
 		while (newline !== -1) {
-			if (Buffer.byteLength(buffered.slice(0, newline)) > MAX_RESPONSE_BYTES) {
-				fail();
-				return;
-			}
 			const line = buffered.slice(0, newline);
 			buffered = buffered.slice(newline + 1);
+			if (Buffer.byteLength(line) > MAX_RESPONSE_BYTES) {
+				newline = buffered.indexOf("\n");
+				continue;
+			}
 			if (line === "configreloaded>>") {
 				active = false;
 				if (timer) clearTimeout(timer);
@@ -201,7 +208,10 @@ export async function startHyprlandButtonCapture(
 			}
 			newline = buffered.indexOf("\n");
 		}
-		if (Buffer.byteLength(buffered) > MAX_RESPONSE_BYTES) fail();
+		if (Buffer.byteLength(buffered) > MAX_RESPONSE_BYTES) {
+			buffered = "";
+			discardingOversizedLine = true;
+		}
 	});
 	if (!(await connected) || stopped || !(await refresh("start"))) {
 		stop();

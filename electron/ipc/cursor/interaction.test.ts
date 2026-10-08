@@ -61,7 +61,13 @@ import {
 import { pauseCursorCapture, resetCursorCaptureClock, resumeCursorCapture } from "./telemetry";
 
 describe("captured cursor interactions", () => {
+	const platformDescriptor = Object.getOwnPropertyDescriptor(
+		process,
+		"platform",
+	) as PropertyDescriptor;
+
 	beforeEach(() => {
+		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
 		startPrimary.mockReset();
 		startPrimary.mockResolvedValue({ available: false, stop: vi.fn() });
 		startEvdev.mockClear();
@@ -81,6 +87,7 @@ describe("captured cursor interactions", () => {
 		setIsCursorCaptureActive(false);
 		resetCursorCaptureClock();
 		vi.useRealTimers();
+		Object.defineProperty(process, "platform", platformDescriptor);
 	});
 
 	it("records buttons and releases against the media clock and creates zooms", () => {

@@ -234,13 +234,30 @@ describe("Hyprland button capture", () => {
 	it.each([
 		false,
 		true,
-	])("bounds unterminated and terminated socket lines (terminated=%s)", async (terminated) => {
+	])("discards oversized foreign lines without losing capture (terminated=%s)", async (terminated) => {
 		const onUnavailable = vi.fn();
 		const capture = await startHyprlandButtonCapture(handlers, { ...options(), onUnavailable });
 		stops.push(capture.stop);
-		socket.emit("data", "x".repeat(4097) + (terminated ? "\n" : ""));
-		expect(socket.destroyed).toBe(true);
-		expect(onUnavailable).toHaveBeenCalledOnce();
+		socket.emit("data", "activewindow>>" + "x".repeat(4097) + (terminated ? "\n" : ""));
+		if (!terminated) {
+			socket.emit("data", `custom>>${token()}-down-2`);
+			socket.emit("data", "\n");
+		}
+		socket.emit("data", `custom>>${token()}-down-1\n`);
+		expect(socket.destroyed).toBe(false);
+		expect(onUnavailable).not.toHaveBeenCalled();
+		expect(handlers.onMouseDown.mock.calls).toEqual([[1]]);
+	});
+
+	it("bounds UTF-8 byte length and discards through the delimiter before decoding later events", async () => {
+		await start();
+		socket.emit("data", "windowtitlev2>>" + "ü".repeat(2048));
+		socket.emit(
+			"data",
+			"ignored fragment\n" + "x".repeat(5000) + `\ncustom>>${token()}-down-3\n`,
+		);
+		expect(socket.destroyed).toBe(false);
+		expect(handlers.onMouseDown.mock.calls).toEqual([[3]]);
 	});
 
 	it("times out event connection without registering binds", async () => {
