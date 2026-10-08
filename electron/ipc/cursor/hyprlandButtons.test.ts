@@ -203,6 +203,27 @@ describe("Hyprland button capture", () => {
 		expect(handlers.onMouseDown).toHaveBeenCalledOnce();
 	});
 
+	it("cancels queued reloads after stop without extending the compositor lease", async () => {
+		const capture = await start();
+		let registered!: (ok: boolean) => void;
+		request.mockImplementationOnce(
+			() =>
+				new Promise<boolean>((resolve) => {
+					registered = resolve;
+				}),
+		);
+		socket.emit("data", "configreloaded>>\n");
+		await flush();
+		socket.emit("data", "configreloaded>>\nconfigreloaded>>\nconfigreloaded>>\n");
+		capture.stop();
+		registered(true);
+		await flush();
+		expect(request).toHaveBeenCalledTimes(3);
+		expect(request.mock.calls[2][1]).toContain("s.stop()");
+		expect(socket.destroyed).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
 	it("rejects unavailable capabilities without attempting legacy binds", async () => {
 		request.mockResolvedValue(false);
 		expect((await start()).available).toBe(false);

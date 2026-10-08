@@ -125,7 +125,11 @@ export async function startHyprlandButtonCapture(
 	let timer: NodeJS.Timeout | null = null;
 	const send = (action: "start" | "renew" | "stop") => {
 		const pending = (requestQueues.get(requestPath) ?? Promise.resolve(true))
-			.then(() => request(requestPath, buildHyprlandButtonCommand(action, token)))
+			.then(() =>
+				stopped && action !== "stop"
+					? false
+					: request(requestPath, buildHyprlandButtonCommand(action, token)),
+			)
 			.catch(() => false);
 		requestQueues.set(requestPath, pending);
 		void pending.then(() => {
